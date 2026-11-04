@@ -92,7 +92,7 @@ function mergeActivityProgress(s){
   }
   return {...s,records};
 }
-function cleanProgress(s){s=mergeActivityProgress(s);if(!s||!s.records||typeof s.records!=='object')return s;return {...s,records:Object.fromEntries(Object.entries(s.records).filter(([id])=>Object.hasOwn(byId,id)||!Object.hasOwn(retiredById,id)).map(([id,r])=>[id,answerCorrections[id]&&byId[id]&&r&&r.checked?{...r,last:r.input===byId[id].answer}:r]).map(([id,r])=>[id,byId[id]?.twoStep?.staticExistence?migrateStudyRecord(byId[id],r):r]))};}
+function cleanProgress(s){s=mergeActivityProgress(s);if(!s||!s.records||typeof s.records!=='object')return s;return {...s,records:Object.fromEntries(Object.entries(s.records).filter(([id])=>Object.hasOwn(byId,id)||!Object.hasOwn(retiredById,id)).map(([id,r])=>[id,answerCorrections[id]&&byId[id]&&r&&r.checked?{...r,last:r.input===byId[id].answer}:r]).map(([id,r])=>[id,byId[id]?.matching?migrateMatchRecord(byId[id],r):r]))};}
 function compatibleBank(bank){if(!bank||!Array.isArray(bank.questions))return false;const list=bank.questions;if(new Set(list.map(q=>q.id)).size!==list.length)return false;const uploaded=Object.fromEntries(list.map(q=>[q.id,q]));return Q.every(q=>Object.hasOwn(uploaded,q.id)||(BANK.questionMerges||[]).some(m=>m.id===q.id&&Object.hasOwn(uploaded,m.originalId)&&Object.hasOwn(uploaded,m.matchingId)))&&list.every(q=>Object.hasOwn(knownById,q.id)&&(q.answer===knownById[q.id].answer||q.answer===answerCorrections[q.id]?.oldAnswer)&&q.section===knownById[q.id].section);}
 function valid(s){if(!s||s.version!==VERSION||!s.records||typeof s.records!=='object')return false;
 for(const [id,r] of Object.entries(s.records)){
@@ -106,27 +106,44 @@ for(const [id,r] of Object.entries(s.records)){
  if(r.checked&&(!inputReady(q,r.input)||r.last!==(r.input===q.answer)))return false;
 }return true;}
 try{const embedded=cleanProgress(JSON.parse($('saved-progress').textContent));if(valid(embedded))state=embedded;const raw=localStorage.getItem(KEY);if(raw){const local=cleanProgress(JSON.parse(raw));if(valid(local)&&(local.updated||0)>=(state.updated||0))state=local;}}catch(e){storageOK=false;}
+function fixedMatchField(q,row,col){
+  return /Hán Việt/i.test(q.matching.columns[col])&&/^Không (?:có Hán Việt|áp dụng)/i.test(q.matching.rows[row].answers[col]);
+}
+function matchTargets(q){
+  return q.matching.rows.flatMap((row,i)=>row.unavailable?[]:q.matching.columns.flatMap((_,c)=>(q.twoStep&&c===0)||fixedMatchField(q,i,c)?[]:[{row:i,col:c}]));
+}
+function fixedMatchLabel(q,row,col){return `<div class="match-field match-fixed"><span class="match-field-label">${esc(q.matching.columns[col])}</span><p class="small muted">${esc(matchDisplayValue(q,col,q.matching.rows[row].answers[col]))}</p></div>`;}
+function migrateMatchRecord(q,r){
+  if(!r||!r.input)return r;
+  if(q.twoStep)return migrateStudyRecord(q,r);
+  const matrix=matchMatrix(q,r.input);if(!matrix)return r;
+  const input=JSON.stringify(matrix),checked=!!r.checked&&inputReady(q,input);
+  return {...r,input,checked,last:r.checked?(checked?input===q.answer:null):r.last};
+}
+function autoGradeMatching(q){const r=record(q);if(!r.checked&&r.input&&inputReady(q,r.input)){gradeOne(q);store();}}
 function matchMatrix(q,input){
   if(q.twoStep)return studyState(q,input)?.rows||null;
-  if(!input)return q.matching.rows.map(()=>q.matching.columns.map(()=>''));
+  if(!input)return q.matching.rows.map((row,i)=>q.matching.columns.map((_,c)=>fixedMatchField(q,i,c)?row.answers[c]:''));
   try{const m=JSON.parse(input);if(!Array.isArray(m)||m.length!==q.matching.rows.length)return null;
-    if(!m.every(row=>Array.isArray(row)&&row.length===q.matching.columns.length&&row.every((v,c)=>typeof v==='string'&&(v===''||matchPool(q,c).includes(v)))))return null;
+    if(!m.every(row=>Array.isArray(row)&&row.length===q.matching.columns.length&&row.every(v=>typeof v==='string')))return null;
+    m.forEach((row,i)=>row.forEach((_,c)=>{if(fixedMatchField(q,i,c))row[c]=q.matching.rows[i].answers[c];}));
+    if(!m.every((row,i)=>row.every((v,c)=>fixedMatchField(q,i,c)||v===''||matchPool(q,c).includes(v))))return null;
     return m;
   }catch(e){return null;}
 }
 function inputReady(q,input){
   if(q.twoStep)return studyReady(q,input);
   if(!q.matching)return input.length===(q.section==='m2'?4:1);
-  const m=matchMatrix(q,input);return !!m&&m.every(row=>row.every(v=>v!==''));
+  const m=matchMatrix(q,input);return !!m&&matchTargets(q).every(({row,col})=>m[row][col]!=='');
 }
 function matchHash(s){let h=2166136261;for(const c of s){h^=c.codePointAt(0);h=Math.imul(h,16777619);}return h>>>0;}
-function matchPool(q,c){return [...new Set(q.matching.choices?.[c]||q.matching.rows.map(r=>r.answers[c]))].sort((a,b)=>matchHash(q.id+'|'+c+'|'+a)-matchHash(q.id+'|'+c+'|'+b));}
+function matchPool(q,c){return [...new Set(q.matching.choices?.[c]||q.matching.rows.map(r=>r.answers[c]))].filter(v=>!(/Hán Việt/i.test(q.matching.columns[c])&&/^Không (?:có Hán Việt|áp dụng)/i.test(v))).sort((a,b)=>matchHash(q.id+'|'+c+'|'+a)-matchHash(q.id+'|'+c+'|'+b));}
 var activeMatchDrag=null,keyboardMatchDrag=null;
 function applyMatchDrop(q,row,col,value){
   if(q.twoStep)return applyStudyDrop(q,row,col,value);
-  if(record(q).checked||!q.matching.rows[row]||!matchPool(q,col).includes(value))return false;
+  if(record(q).checked||!q.matching.rows[row]||fixedMatchField(q,row,col)||!matchPool(q,col).includes(value))return false;
   const m=matchMatrix(q,record(q).input)||matchMatrix(q,'');m[row][col]=value;
-  state.records[q.id]={...record(q),input:JSON.stringify(m),checked:false};store();render();return true;
+  state.records[q.id]={...record(q),input:JSON.stringify(m),checked:false};if(inputReady(q,record(q).input))gradeOne(q);store();render();return true;
 }
 function beginMatchDrag(event,q,col,value,source){
   if(record(q).checked||event.button>0||activeMatchDrag)return;
@@ -164,23 +181,25 @@ function matchDisplayValue(q,col,value){
   return /Hán Việt/i.test(q.matching.columns[col])?value.replace(/[（(](?=[^）)]*\p{Script=Han})[^）)]*[）)]/gu,'').trim():value;
 }
 function renderAllMatchPools(q,checked,firstColumn=0){
-  const columns=q.matching.columns.map((label,c)=>({label,col:c,values:matchPool(q,c)})).slice(firstColumn);
+  const columns=q.matching.columns.map((label,c)=>({label,col:c,values:matchPool(q,c)})).slice(firstColumn).filter(group=>group.values.length);
   return `<div class="drag-bank ${checked?'is-graded':''}" aria-label="Tất cả thẻ để kéo"><div class="drag-pool-grid" data-pool-count="${columns.length}">${columns.map(group=>`<section class="drag-pool" data-pool-group="${group.col}" aria-label="${esc(group.label)}"><h4>${esc(group.label)}</h4><div class="drag-chips">${group.values.map(value=>`<button type="button" class="match-chip" draggable="true" data-drag-col="${group.col}" data-drag-value="${esc(value)}" ${checked?'disabled':''} aria-label="Kéo ${esc(matchDisplayValue(q,group.col,value))}"><span class="drag-grip" aria-hidden="true">⠿</span><span>${esc(matchDisplayValue(q,group.col,value))}</span></button>`).join('')}</div></section>`).join('')}</div><div class="drag-keyboard small muted">Bàn phím: Enter lấy thẻ, Tab đến ô rồi Enter để thả.</div></div>`;
 }
 
 function renderMatching(q,box){
+  autoGradeMatching(q);
   const r=record(q),m=matchMatrix(q,r.input)||matchMatrix(q,''),pools=q.matching.columns.map((_,c)=>matchPool(q,c));
-  const filled=m.flat().filter(Boolean).length,total=m.length*q.matching.columns.length;
+  const targets=matchTargets(q),filled=targets.filter(({row,col})=>m[row][col]).length,total=targets.length;
   box.innerHTML=`<div class="cardheader"><div><div class="eyebrow">Câu ${numberById[q.id]} · ${esc(q.lesson)}</div><h2>${esc(q.title||'Nối từ')}</h2><div class="meta">Câu ${numberById[q.id]}/${Q.length} · Câu gốc ${q.number} trong đề</div></div></div>
     <p class="match-instruction">${esc(q.questionText||'Nối đủ thông tin cho từng từ.')}</p>
     ${q.image?`<details class="original-question"><summary>Xem câu gốc và bốn lựa chọn</summary><div class="figure"><img class="qimage" src="${A[q.image]}" alt="Câu ${q.number} trong đề gốc"></div></details>`:''}
-    <p class="small muted">Kéo thẻ bên dưới và thả vào ô cùng loại của từng từ. Mỗi từ cần đủ ${q.matching.columns.length} ô. Thẻ có thể dùng lại nếu thông tin trùng nhau.</p>
+    <p class="small muted">Kéo thẻ bên dưới và thả vào ô cùng loại của từng từ. Điền đủ các ô cần nối; thông tin không áp dụng được ghi sẵn. Thẻ có thể dùng lại nếu thông tin trùng nhau.</p>
     ${renderAllMatchPools(q,r.checked,q.twoStep?1:0)}
     <div class="match-rows">${q.matching.rows.map((row,i)=>`<section class="match-row"><h3 lang="ja">${esc(row.label)}</h3><div class="match-fields">${q.matching.columns.map((label,c)=>{
+      if(fixedMatchField(q,i,c))return fixedMatchLabel(q,i,c);
       const selected=m[i][c],right=selected===row.answers[c];
       return `<div class="match-field ${r.checked?(right?'is-right':'is-wrong'):''}"><span class="match-field-label">${esc(label)}</span><div class="match-drop ${selected?'has-value':''} " data-drop-row="${i}" data-drop-col="${c}" tabindex="${r.checked?-1:0}" role="button" aria-label="Thả ${esc(label)} cho ${esc(row.label)}" aria-disabled="${r.checked}">${selected?esc(matchDisplayValue(q,c,selected)):`<span class="drop-placeholder">Thả ${esc(label.toLowerCase())} vào đây</span>`}</div>${!r.checked&&selected?`<button type="button" class="drop-clear" data-clear-row="${i}" data-clear-col="${c}" aria-label="Xoá ${esc(label)} của ${esc(row.label)}">Xoá thẻ</button>`:''}${r.checked?`<small class="match-verdict">${right?'✓ Đúng':'→ '+esc(matchDisplayValue(q,c,row.answers[c]))}</small>`:''}</div>`;
     }).join('')}</div></section>`).join('')}</div>
-    <div class="controls"><button id="matchCheck" class="primary" ${r.checked||!inputReady(q,r.input)?'disabled':''}>Chấm bài nối</button><span class="small muted" id="matchFilled">${filled}/${total} ô đã nối</span></div>
+    <div class="controls"><span class="small muted" id="matchFilled">${filled}/${total} ô đã nối</span></div>
     ${r.checked?`<div class="feedback ${r.last?'':'bad'}" role="status"><strong lang="ja">${r.last?'正解':'不正解'}</strong></div>${q.evidence?`<div class="figure"><img class="sourceimg" src="${A[q.evidence]}" alt="Đối chiếu bài làm câu ${q.number}" tabindex="0" role="button" aria-haspopup="dialog"></div>`:''}${q.answerNote?`<div class="answer-note">${esc(q.answerNote)}</div>`:''}<div class="controls"><button id="retryBtn">Làm lại bài nối</button></div>`:''}`;
   box.querySelectorAll('[data-drag-value]').forEach(chip=>{
     const col=Number(chip.dataset.dragCol),value=chip.dataset.dragValue;
@@ -198,12 +217,11 @@ function renderMatching(q,box){
   box.querySelectorAll('[data-clear-row]').forEach(button=>button.onclick=()=>{
     const m=matchMatrix(q,record(q).input);m[Number(button.dataset.clearRow)][Number(button.dataset.clearCol)]='';state.records[q.id]={...record(q),input:JSON.stringify(m),checked:false};store();render();
   });
-  $('matchCheck').onclick=()=>{if(gradeOne(q)){store();render();}};
   if($('retryBtn'))$('retryBtn').onclick=()=>{state.records[q.id]={...record(q),input:'',checked:false};store();render();};
 }
 
 function studyState(q,input){
-  if(!input)return {original:'',rows:q.matching.rows.map(row=>[row.answers[0],'','',''])};
+  if(!input)return {original:'',rows:q.matching.rows.map((row,i)=>row.answers.map((v,c)=>c===0||fixedMatchField(q,i,c)?v:''))};
   try{const d=JSON.parse(input);
     if(!d||!['','1','2','3','4'].includes(d.original)||!Array.isArray(d.rows)||d.rows.length!==q.matching.rows.length)return null;
     if(!d.rows.every(row=>Array.isArray(row)&&row.length===4&&row.every(v=>typeof v==='string')))return null;
@@ -211,11 +229,11 @@ function studyState(q,input){
       if(!['','Từ có thật','Không tồn tại'].includes(d.rows[i][0]))return null;
       d.rows[i][0]=q.matching.rows[i].answers[0];
       if(q.matching.rows[i].unavailable){d.rows[i]=['Không tồn tại','','',''];continue;}
-      if(!d.rows[i].slice(1).every((v,c)=>v===''||matchPool(q,c+1).includes(v)))return null;
+      for(let c=1;c<d.rows[i].length;c++){if(fixedMatchField(q,i,c))d.rows[i][c]=q.matching.rows[i].answers[c];else if(d.rows[i][c]!==''&&!matchPool(q,c).includes(d.rows[i][c]))return null;}
     }return d;
   }catch(e){return null;}
 }
-function studyReady(q,input){const d=studyState(q,input);return !!d&&!!d.original&&d.rows.every((row,i)=>q.matching.rows[i].unavailable||row.slice(1).every(Boolean));}
+function studyReady(q,input){const d=studyState(q,input);return !!d&&!!d.original&&matchTargets(q).every(({row,col})=>!!d.rows[row][col]);}
 function migrateStudyRecord(q,r){
   if(!r||typeof r.input!=='string'||!r.input)return r;
   const d=studyState(q,r.input);if(!d)return r;
@@ -224,14 +242,15 @@ function migrateStudyRecord(q,r){
 }
 function saveStudy(q,data){state.records[q.id]={...record(q),input:JSON.stringify(data),checked:false};if(studyReady(q,record(q).input))gradeOne(q);store();render();}
 function applyStudyDrop(q,row,col,value){
-  const d=studyState(q,record(q).input);if(record(q).checked||!d||!d.original||!d.rows[row]||col===0||q.matching.rows[row].unavailable||!matchPool(q,col).includes(value))return false;
+  const d=studyState(q,record(q).input);if(record(q).checked||!d||!d.original||!d.rows[row]||col===0||q.matching.rows[row].unavailable||fixedMatchField(q,row,col)||!matchPool(q,col).includes(value))return false;
   d.rows[row][col]=value;
   saveStudy(q,d);return true;
 }
 function renderTwoStep(q,box){
+  autoGradeMatching(q);
   const r=record(q),d=studyState(q,r.input)||studyState(q,'');
   const pools=q.matching.columns.map((_,c)=>matchPool(q,c));
-  const completed=d.rows.reduce((sum,row,i)=>sum+(q.matching.rows[i].unavailable?0:row.slice(1).filter(Boolean).length),0),total=q.matching.rows.filter(row=>!row.unavailable).length*3;
+  const targets=matchTargets(q),completed=targets.filter(({row,col})=>d.rows[row][col]).length,total=targets.length;
   const originalRight=d.original===q.twoStep.answer;
   box.innerHTML=`<div class="cardheader"><div><div class="eyebrow">Câu ${numberById[q.id]} · ${esc(q.lesson)}</div><h2>${esc(q.title)}</h2><div class="meta">Câu ${numberById[q.id]}/${Q.length} · Câu ${q.number} trong đề</div></div></div>
     <section class="study-step"><h3>Bước 1 · Làm câu gốc</h3><p>${q.twoStep.prompt?esc(q.twoStep.prompt):`Chọn cách viết Kanji đúng của <strong lang="ja">${esc(q.twoStep.reading||'のうこう')}</strong> trong câu.`}</p>
@@ -239,12 +258,12 @@ function renderTwoStep(q,box){
     <div class="study-original-choices">${q.twoStep.choices.map((v,i)=>`<button type="button" data-study-choice="${i+1}" class="choice ${d.original===String(i+1)?'selected':''} ${d.original&&String(i+1)===q.twoStep.answer?'key':''} ${d.original===String(i+1)&&!originalRight?'miss':''}" ${d.original||r.checked?'disabled':''}><span>${i+1}.</span> <span lang="ja">${esc(v)}</span></button>`).join('')}</div>
     ${d.original?`<p class="study-original-feedback ${originalRight?'right':'wrong'}" role="status">${originalRight?'✓ Đúng.':'Chưa chính xác. Đáp án đúng được đánh dấu xanh.'}</p>${!r.checked?'<button type="button" id="studyOriginalRetry" class="small">Làm lại câu gốc</button>':''}`:''}</section>
     ${!d.original?'<p class="small muted study-next">Trả lời câu gốc để mở phần học cả bốn lựa chọn.</p>':`
-    <section class="study-step"><h3>Bước 2 · Học cả bốn lựa chọn</h3><p>Kéo thẻ nối <strong>hiragana, nghĩa và Hán Việt</strong> cho từ cần học. Các cách viết không tồn tại được ghi sẵn bên dưới.</p>
+    <section class="study-step"><h3>Bước 2 · Học cả bốn lựa chọn</h3><p>Kéo thẻ nối <strong>hiragana, nghĩa và Hán Việt</strong> cho từ cần học. Các cách viết không tồn tại và phần không có Hán Việt được ghi sẵn, không cần kéo thả.</p>
     ${renderAllMatchPools(q,r.checked,q.twoStep?1:0)}
     <div class="match-rows">${q.matching.rows.map((row,i)=>{
       const values=d.rows[i],right=values.every((v,c)=>v===row.answers[c]);
       if(row.unavailable)return `<section class="match-row study-word study-static" data-study-word="${i}"><h3 lang="ja">${esc(row.label)}</h3><p class="study-unavailable">Không tồn tại</p></section>`;
-      const field=c=>`<div class="match-field"><span class="match-field-label">${esc(q.matching.columns[c])}</span><div class="match-drop ${values[c]?'has-value':''} " data-drop-row="${i}" data-drop-col="${c}" tabindex="${r.checked?-1:0}" role="button" aria-disabled="${r.checked}" aria-label="Thả ${esc(q.matching.columns[c])} cho ${esc(row.label)}">${values[c]?esc(matchDisplayValue(q,c,values[c])):`<span class="drop-placeholder">Thả ${esc(q.matching.columns[c].toLowerCase())} vào đây</span>`}</div>${!r.checked&&values[c]?`<button type="button" class="drop-clear" data-study-clear-row="${i}" data-study-clear-col="${c}">Xoá thẻ</button>`:''}</div>`;
+      const field=c=>fixedMatchField(q,i,c)?fixedMatchLabel(q,i,c):`<div class="match-field"><span class="match-field-label">${esc(q.matching.columns[c])}</span><div class="match-drop ${values[c]?'has-value':''} " data-drop-row="${i}" data-drop-col="${c}" tabindex="${r.checked?-1:0}" role="button" aria-disabled="${r.checked}" aria-label="Thả ${esc(q.matching.columns[c])} cho ${esc(row.label)}">${values[c]?esc(matchDisplayValue(q,c,values[c])):`<span class="drop-placeholder">Thả ${esc(q.matching.columns[c].toLowerCase())} vào đây</span>`}</div>${!r.checked&&values[c]?`<button type="button" class="drop-clear" data-study-clear-row="${i}" data-study-clear-col="${c}">Xoá thẻ</button>`:''}</div>`;
       return `<section class="match-row study-word ${r.checked?(right?'is-right':'is-wrong'):''}" data-study-word="${i}"><h3 lang="ja">${esc(row.label)}</h3><div class="match-fields study-details">${[1,2,3].map(field).join('')}</div>${r.checked?`<div class="study-row-result">${right?'✓ Đúng':`Cần sửa: ${esc(row.answers.slice(1).map((v,c)=>matchDisplayValue(q,c+1,v)).filter(Boolean).join(' → '))}`}</div>`:''}</section>`;
     }).join('')}</div>
     <div class="controls"><span class="small muted">${completed}/${total} ô đã nối</span></div></section>
