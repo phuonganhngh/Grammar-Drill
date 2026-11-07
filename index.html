@@ -31,9 +31,10 @@ body:has(#imageDialog[open]){overflow:hidden}
 
 .study-unavailable{display:inline-block;background:#f1f3f1;color:#5e6d65;border-radius:8px;padding:9px 14px;margin:0;font-weight:600}.study-static{background:#fafbfa}.study-static h3{margin-bottom:10px}
 
-.drag-bank{max-height:none;overflow:visible}.drag-pool-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.drag-pool-grid[data-pool-count="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}.drag-pool{min-width:0}.drag-pool h4{margin:0 0 9px;font-size:13px;line-height:1.5;color:#234c3b}.drag-pool .drag-chips{display:flex;flex-direction:column;gap:8px;align-items:stretch}.drag-pool .match-chip{width:100%;box-sizing:border-box}.drag-pool-grid .drag-pool+.drag-pool{border-left:1px solid #d9e5dc;padding-left:14px}.match-drop{transition:background .12s,border-color .12s}@media(max-width:900px){.drag-bank{position:static;max-height:none;overflow:visible}.drag-pool-grid,.drag-pool-grid[data-pool-count="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}.drag-pool-grid .drag-pool+.drag-pool{border-left:0;padding-left:0}}@media(max-width:600px){.drag-pool-grid,.drag-pool-grid[data-pool-count="2"]{grid-template-columns:1fr;gap:16px}.drag-pool-grid .drag-pool+.drag-pool{border-top:1px solid #d9e5dc;padding-top:14px}.drag-pool h4{font-size:13px}.drag-bank{padding:12px}}
+.drag-bank{max-height:none;overflow:visible}.drag-pool-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.drag-pool-grid[data-pool-count="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}.drag-pool{min-width:0}.drag-pool h4{margin:0 0 9px;font-size:13px;line-height:1.5;color:#234c3b}.drag-pool .drag-chips{display:flex;flex-direction:column;gap:8px;align-items:stretch}.drag-pool .match-chip{width:100%;box-sizing:border-box}.drag-pool-grid .drag-pool+.drag-pool{border-left:1px solid #d9e5dc;padding-left:14px}.match-drop{transition:background .12s,border-color .12s}@media(max-width:900px){.drag-bank{max-height:none;overflow:visible}.drag-pool-grid,.drag-pool-grid[data-pool-count="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}.drag-pool-grid .drag-pool+.drag-pool{border-left:0;padding-left:0}}@media(max-width:600px){.drag-pool-grid,.drag-pool-grid[data-pool-count="2"]{grid-template-columns:1fr;gap:16px}.drag-pool-grid .drag-pool+.drag-pool{border-top:1px solid #d9e5dc;padding-top:14px}.drag-pool h4{font-size:13px}.drag-bank{position:static;padding:12px}}
 
 .group-choices{display:flex;flex-wrap:wrap;gap:12px}.group-choices .choice{display:flex;gap:10px;align-items:center;justify-content:center;min-width:130px;padding:14px}.group-item>p{line-height:1.8;overflow-wrap:anywhere}
+.drag-bank.is-too-tall{position:static}
 </style>
 </head>
 <body>
@@ -183,6 +184,12 @@ function beginMatchDrag(event,q,col,value,source){
 function matchDisplayValue(q,col,value){
   return /Hán Việt/i.test(q.matching.columns[col])?value.replace(/[（(](?=[^）)]*\p{Script=Han})[^）)]*[）)]/gu,'').trim():value;
 }
+function updateDragBankPlacement(){
+  const bank=$('question').querySelector('.drag-bank');
+  if(bank)bank.classList.toggle('is-too-tall',bank.offsetHeight>(window.visualViewport?.height||innerHeight)-180);
+}
+window.addEventListener('resize',updateDragBankPlacement,{passive:true});
+if(window.visualViewport)window.visualViewport.addEventListener('resize',updateDragBankPlacement,{passive:true});
 function renderAllMatchPools(q,checked,firstColumn=0){
   const columns=q.matching.columns.map((label,c)=>({label,col:c,values:matchPool(q,c)})).slice(firstColumn).filter(group=>group.values.length);
   return `<div class="drag-bank ${checked?'is-graded':''}" aria-label="Tất cả thẻ để kéo"><div class="drag-pool-grid" data-pool-count="${columns.length}">${columns.map(group=>`<section class="drag-pool" data-pool-group="${group.col}" aria-label="${esc(group.label)}"><h4>${esc(group.label)}</h4><div class="drag-chips">${group.values.map(value=>`<button type="button" class="match-chip" draggable="true" data-drag-col="${group.col}" data-drag-value="${esc(value)}" ${checked?'disabled':''} aria-label="Kéo ${esc(matchDisplayValue(q,group.col,value))}"><span class="drag-grip" aria-hidden="true">⠿</span><span>${esc(matchDisplayValue(q,group.col,value))}</span></button>`).join('')}</div></section>`).join('')}</div><div class="drag-keyboard small muted">Bàn phím: Enter lấy thẻ, Tab đến ô rồi Enter để thả.</div></div>`;
@@ -204,6 +211,7 @@ function renderMatching(q,box){
     }).join('')}</div></section>`).join('')}</div>
     <div class="controls"><span class="small muted" id="matchFilled">${filled}/${total} ô đã nối</span></div>
     ${r.checked?`<div class="feedback ${r.last?'':'bad'}" role="status"><strong lang="ja">${r.last?'正解':'不正解'}</strong></div>${q.evidence?`<div class="figure"><img class="sourceimg" src="${A[q.evidence]}" alt="Đối chiếu bài làm câu ${q.number}" tabindex="0" role="button" aria-haspopup="dialog"></div>`:''}${q.answerNote?`<div class="answer-note">${esc(q.answerNote)}</div>`:''}<div class="controls"><button id="retryBtn">Làm lại bài nối</button></div>`:''}`;
+  updateDragBankPlacement();
   box.querySelectorAll('[data-drag-value]').forEach(chip=>{
     const col=Number(chip.dataset.dragCol),value=chip.dataset.dragValue;
     chip.onpointerdown=e=>beginMatchDrag(e,q,col,value,chip);
@@ -273,6 +281,7 @@ function renderTwoStep(q,box){
     ${r.checked?`<div class="feedback ${r.last?'':'bad'}" role="status"><strong lang="ja">${r.last?'正解':'不正解'}</strong></div><div class="answer-note">${esc(q.answerNote)}</div><div class="controls"><button id="retryBtn">Làm lại cả hai bước</button></div>`:''}`}`;
   box.querySelectorAll('[data-study-choice]').forEach(button=>button.onclick=()=>{const next=studyState(q,record(q).input);next.original=button.dataset.studyChoice;saveStudy(q,next);});
   if($('studyOriginalRetry'))$('studyOriginalRetry').onclick=()=>{const next=studyState(q,record(q).input);next.original='';saveStudy(q,next);};
+  updateDragBankPlacement();
   box.querySelectorAll('[data-drag-value]').forEach(chip=>{
     const col=Number(chip.dataset.dragCol),value=chip.dataset.dragValue;
     chip.onpointerdown=e=>beginMatchDrag(e,q,col,value,chip);
